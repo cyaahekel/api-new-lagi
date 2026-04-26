@@ -22,7 +22,7 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Generate browser-like headers
 const getHeaders = (isBrowser = true) => {
-    // 🔥 FIX: .trim() otomatis buang \r, \n, atau spasi tersembunyi di token
+    // 🔥 FIX 1: .trim() otomatis buang \r, \n, atau spasi tersembunyi di token
     const token = (process.env.WA_TOKEN || '').trim();
 
     const base = {
@@ -43,7 +43,7 @@ const getHeaders = (isBrowser = true) => {
             'sec-fetch-site': 'same-origin',
             'sec-fetch-mode': 'cors',
             'sec-fetch-dest': 'empty',
-            'accept-encoding': 'gzip, deflate, br, zstd',
+            // 🔥 FIX 2: HAPUS 'accept-encoding' biar response nggak gzip/br (node-fetch v2 nggak auto-decompress)
             'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
             'priority': 'u=1, i'
         };
@@ -100,7 +100,7 @@ app.get('/', (req, res) => {
     res.json({
         status: '🟢 API Online',
         service: 'PusatWA Bridge',
-        version: '2.1.0',
+        version: '2.1.1',
         timestamp: new Date().toISOString(),
         endpoints: [
             'GET /api/pair?no=628xxx&name=DeviceName&mode=off',
@@ -360,7 +360,7 @@ app.delete('/api/device/:id', async (req, res) => {
 });
 
 // ==========================================
-// 🔥 ENDPOINT BARU: DASHBOARD
+// 🔥 ENDPOINT: DASHBOARD
 // ==========================================
 app.get('/api/user/dashboard', async (req, res) => {
     if (!process.env.WA_TOKEN) return res.status(500).json({ error: 'WA_TOKEN belum dikonfigurasi' });
@@ -372,7 +372,6 @@ app.get('/api/user/dashboard', async (req, res) => {
             method: 'GET',
             browserMode: true,
             headers: {
-                // Override referer khusus dashboard sesuai request HTTP/2 kamu
                 'referer': 'https://pusatwa.com/user'
             }
         });
@@ -387,7 +386,7 @@ app.get('/api/user/dashboard', async (req, res) => {
         res.json({
             success: true,
             timestamp: new Date().toISOString(),
-            data: data.data || data
+             data.data || data
         });
 
     } catch (error) {
