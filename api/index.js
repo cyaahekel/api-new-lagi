@@ -18,14 +18,16 @@ app.use(express.urlencoded({ extended: true }));
 
 // ========== HELPER FUNCTIONS ==========
 
-// Delay promise
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Generate browser-like headers
 const getHeaders = (isBrowser = true) => {
+    // 🔥 FIX: .trim() otomatis buang \r, \n, atau spasi tersembunyi di token
+    const token = (process.env.WA_TOKEN || '').trim();
+
     const base = {
         'accept': '*/*',
-        'authorization': process.env.WA_TOKEN,
+        'authorization': token,
         'content-type': 'application/json',
         'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36'
     };
@@ -61,7 +63,6 @@ const fetchWithRetry = async (url, options = {}, retries = 3, backoff = 1000) =>
                 }
             });
             
-            // Handle rate limiting
             if (response.status === 429) {
                 const retryAfter = response.headers.get('retry-after') || backoff * attempt;
                 await delay(parseInt(retryAfter));
@@ -77,7 +78,7 @@ const fetchWithRetry = async (url, options = {}, retries = 3, backoff = 1000) =>
     }
 };
 
-// Validasi nomor WhatsApp (format Indonesia)
+// Validasi nomor WhatsApp
 const validatePhone = (phone) => {
     if (!phone) return false;
     const cleaned = phone.replace(/\D/g, '');
@@ -94,12 +95,12 @@ const formatPhone = (phone) => {
 
 // ========== ROUTES ==========
 
-// 🏠 Root endpoint - Health check
+// 🏠 Root endpoint
 app.get('/', (req, res) => {
     res.json({
         status: '🟢 API Online',
         service: 'PusatWA Bridge',
-        version: '2.0.0',
+        version: '2.1.0',
         timestamp: new Date().toISOString(),
         endpoints: [
             'GET /api/pair?no=628xxx&name=DeviceName&mode=off',
@@ -107,7 +108,7 @@ app.get('/', (req, res) => {
             'GET /api/devices',
             'GET /api/mode?id=dev_xxx&mode=on',
             'GET /api/check-status?id=DeviceName',
-            'GET /api/user/dashboard' // <-- Baru
+            'GET /api/user/dashboard'
         ]
     });
 });
@@ -116,7 +117,6 @@ app.get('/', (req, res) => {
 app.get('/api/pair', async (req, res) => {
     const { no, name, mode } = req.query;
     
-    // Validasi input
     if (!no) return res.status(400).json({ error: 'Parameter "no" (nomor WhatsApp) wajib diisi' });
     if (!validatePhone(no)) return res.status(400).json({ error: 'Format nomor tidak valid. Gunakan format: 628xxx atau 08xxx' });
     if (!process.env.WA_TOKEN) return res.status(500).json({ error: 'WA_TOKEN belum dikonfigurasi di environment variables' });
@@ -128,7 +128,6 @@ app.get('/api/pair', async (req, res) => {
     try {
         console.log(`[PAIR] Memulai pairing untuk ${phoneNumber}...`);
 
-        // Step 1: Create device
         const createRes = await fetchWithRetry(`${PUSATWA_BASE}`, {
             method: 'POST',
             body: JSON.stringify({ name: deviceName }),
@@ -138,20 +137,14 @@ app.get('/api/pair', async (req, res) => {
         
         if (!createRes.ok) {
             console.error('[PAIR] Create device failed:', createData);
-            return res.status(createRes.status).json({ 
-                error: 'Gagal membuat sesi perangkat', 
-                detail: createData 
-            });
+            return res.status(createRes.status).json({ error: 'Gagal membuat sesi perangkat', detail: createData });
         }
 
         const deviceId = createData.id || createData.data?.id;
-        if (!deviceId) {
-            return res.status(400).json({ error: 'Device ID tidak ditemukan', detail: createData });
-        }
+        if (!deviceId) return res.status(400).json({ error: 'Device ID tidak ditemukan', detail: createData });
 
         await delay(DEFAULT_DELAY);
 
-        // Step 2: Bypass QR scan
         await fetchWithRetry(`${PUSATWA_BASE}/${deviceId}/scan-qr`, {
             method: 'POST',
             browserMode: true
@@ -159,7 +152,6 @@ app.get('/api/pair', async (req, res) => {
 
         await delay(800);
 
-        // Step 3: Set initial mode
         await fetchWithRetry(`${PUSATWA_BASE}/${deviceId}/mode`, {
             method: 'PUT',
             body: JSON.stringify({ mode: modePilihan }),
@@ -168,7 +160,6 @@ app.get('/api/pair', async (req, res) => {
 
         await delay(DEFAULT_DELAY);
 
-        // Step 4: Request pairing code
         const pairRes = await fetchWithRetry(`${PUSATWA_BASE}/${deviceId}/pair`, {
             method: 'POST',
             body: JSON.stringify({ phone: phoneNumber }),
@@ -178,10 +169,7 @@ app.get('/api/pair', async (req, res) => {
 
         if (!pairRes.ok) {
             console.error('[PAIR] Pairing failed:', pairData);
-            return res.status(pairRes.status).json({
-                error: 'Gagal mendapatkan kode pairing',
-                detail: pairData
-            });
+            return res.status(pairRes.status).json({ error: 'Gagal mendapatkan kode pairing', detail: pairData });
         }
 
         console.log(`[PAIR] Success: ${deviceId}`);
@@ -196,11 +184,7 @@ app.get('/api/pair', async (req, res) => {
 
     } catch (error) {
         console.error('[PAIR] Critical error:', error);
-        res.status(500).json({
-            error: 'Internal server error',
-            message: error.message,
-            tip: 'Cek log Vercel untuk detail error'
-        });
+        res.status(500).json({ error: 'Internal server error', message: error.message, tip: 'Cek log Vercel untuk detail error' });
     }
 });
 
@@ -215,7 +199,6 @@ app.get('/api/qr', async (req, res) => {
     try {
         console.log(`[QR] Generating QR for ${deviceName}...`);
 
-        // Create device
         const createRes = await fetchWithRetry(`${PUSATWA_BASE}`, {
             method: 'POST',
             body: JSON.stringify({ name: deviceName }),
@@ -223,18 +206,13 @@ app.get('/api/qr', async (req, res) => {
         });
         const createData = await createRes.json();
         
-        if (!createRes.ok) {
-            return res.status(createRes.status).json({ error: 'Gagal membuat sesi', detail: createData });
-        }
+        if (!createRes.ok) return res.status(createRes.status).json({ error: 'Gagal membuat sesi', detail: createData });
 
         const deviceId = createData.id || createData.data?.id;
-        if (!deviceId) {
-            return res.status(400).json({ error: 'Device ID tidak ditemukan' });
-        }
+        if (!deviceId) return res.status(400).json({ error: 'Device ID tidak ditemukan' });
 
         await delay(DEFAULT_DELAY);
 
-        // Trigger QR generation
         await fetchWithRetry(`${PUSATWA_BASE}/${deviceId}/scan-qr`, {
             method: 'POST',
             browserMode: true
@@ -242,16 +220,13 @@ app.get('/api/qr', async (req, res) => {
 
         await delay(1500);
 
-        // Get QR code
         const qrRes = await fetchWithRetry(`${PUSATWA_BASE}/${deviceId}/qr`, {
             method: 'GET',
             browserMode: true
         });
         const qrData = await qrRes.json();
 
-        if (!qrRes.ok) {
-            return res.status(qrRes.status).json({ error: 'Gagal mengambil QR', detail: qrData });
-        }
+        if (!qrRes.ok) return res.status(qrRes.status).json({ error: 'Gagal mengambil QR', detail: qrData });
 
         console.log(`[QR] Success: ${deviceId}`);
         res.json({
@@ -264,10 +239,7 @@ app.get('/api/qr', async (req, res) => {
 
     } catch (error) {
         console.error('[QR] Critical error:', error);
-        res.status(500).json({
-            error: 'Gagal generate QR',
-            message: error.message
-        });
+        res.status(500).json({ error: 'Gagal generate QR', message: error.message });
     }
 });
 
@@ -282,9 +254,7 @@ app.get('/api/devices', async (req, res) => {
         });
         const data = await response.json();
 
-        if (!response.ok) {
-            return res.status(response.status).json({ error: 'Gagal mengambil data', detail: data });
-        }
+        if (!response.ok) return res.status(response.status).json({ error: 'Gagal mengambil data', detail: data });
 
         res.json({
             success: true,
@@ -302,12 +272,8 @@ app.get('/api/devices', async (req, res) => {
 app.get('/api/mode', async (req, res) => {
     const { id, mode } = req.query;
     
-    if (!id || !mode) {
-        return res.status(400).json({ error: 'Parameter "id" dan "mode" wajib diisi' });
-    }
-    if (!['on', 'off', 'maintenance'].includes(mode.toLowerCase())) {
-        return res.status(400).json({ error: 'Mode tidak valid. Pilih: on, off, atau maintenance' });
-    }
+    if (!id || !mode) return res.status(400).json({ error: 'Parameter "id" dan "mode" wajib diisi' });
+    if (!['on', 'off', 'maintenance'].includes(mode.toLowerCase())) return res.status(400).json({ error: 'Mode tidak valid. Pilih: on, off, atau maintenance' });
     if (!process.env.WA_TOKEN) return res.status(500).json({ error: 'WA_TOKEN belum dikonfigurasi' });
 
     try {
@@ -318,9 +284,7 @@ app.get('/api/mode', async (req, res) => {
         });
         const data = await response.json();
 
-        if (!response.ok) {
-            return res.status(response.status).json({ error: 'Gagal mengubah mode', detail: data });
-        }
+        if (!response.ok) return res.status(response.status).json({ error: 'Gagal mengubah mode', detail: data });
 
         res.json({ success: true, device_id: id, mode: mode.toLowerCase(), ...data });
 
@@ -344,20 +308,12 @@ app.get('/api/check-status', async (req, res) => {
         });
         const data = await response.json();
 
-        if (!response.ok) {
-            return res.status(response.status).json({ error: 'Gagal cek status', detail: data });
-        }
+        if (!response.ok) return res.status(response.status).json({ error: 'Gagal cek status', detail: data });
 
         const devices = Array.isArray(data) ? data : (data.data || []);
         const device = devices.find(d => d.name === id || d.id === id);
 
-        if (!device) {
-            return res.json({ 
-                status: 'not_found', 
-                message: `Device dengan id/nama "${id}" tidak ditemukan`,
-                searched: id 
-            });
-        }
+        if (!device) return res.json({ status: 'not_found', message: `Device dengan id/nama "${id}" tidak ditemukan`, searched: id });
 
         const isConnected = device.status === 'connected' || device.state === 'connected';
         
@@ -379,7 +335,7 @@ app.get('/api/check-status', async (req, res) => {
     }
 });
 
-// 🗑️ Endpoint 6: Delete Device (Bonus!)
+// 🗑️ Endpoint 6: Delete Device
 app.delete('/api/device/:id', async (req, res) => {
     const { id } = req.params;
     
@@ -393,9 +349,7 @@ app.delete('/api/device/:id', async (req, res) => {
         });
         const data = await response.json();
 
-        if (!response.ok) {
-            return res.status(response.status).json({ error: 'Gagal menghapus device', detail: data });
-        }
+        if (!response.ok) return res.status(response.status).json({ error: 'Gagal menghapus device', detail: data });
 
         res.json({ success: true, message: 'Device berhasil dihapus', device_id: id, ...data });
 
@@ -409,22 +363,16 @@ app.delete('/api/device/:id', async (req, res) => {
 // 🔥 ENDPOINT BARU: DASHBOARD
 // ==========================================
 app.get('/api/user/dashboard', async (req, res) => {
-    // Endpoint ini nge-proxy request ke PusatWA dashboard
-    // Pakai headers persis seperti request HTTP/2 yang kamu kirim
-    
-    if (!process.env.WA_TOKEN) {
-        return res.status(500).json({ error: 'WA_TOKEN belum dikonfigurasi' });
-    }
+    if (!process.env.WA_TOKEN) return res.status(500).json({ error: 'WA_TOKEN belum dikonfigurasi' });
 
     try {
         console.log('[DASHBOARD] Fetching dashboard data...');
 
-        // Request ke endpoint dashboard PusatWA
         const response = await fetchWithRetry('https://pusatwa.com/api/user/dashboard', {
             method: 'GET',
-            browserMode: true, // Pakai headers browser-like lengkap
+            browserMode: true,
             headers: {
-                // Override referer khusus dashboard
+                // Override referer khusus dashboard sesuai request HTTP/2 kamu
                 'referer': 'https://pusatwa.com/user'
             }
         });
@@ -433,25 +381,18 @@ app.get('/api/user/dashboard', async (req, res) => {
 
         if (!response.ok) {
             console.error('[DASHBOARD] PusatWA error:', data);
-            return res.status(response.status).json({
-                error: 'Gagal mengambil data dashboard',
-                detail: data
-            });
+            return res.status(response.status).json({ error: 'Gagal mengambil data dashboard', detail: data });
         }
 
-        // Return data mentah dari PusatWA + wrapper success
         res.json({
             success: true,
             timestamp: new Date().toISOString(),
-            data: data.data || data // Handle berbagai format response
+            data: data.data || data
         });
 
     } catch (error) {
         console.error('[DASHBOARD] Critical error:', error);
-        res.status(500).json({
-            error: 'Gangguan saat mengambil dashboard',
-            message: error.message
-        });
+        res.status(500).json({ error: 'Gangguan saat mengambil dashboard', message: error.message });
     }
 });
 
@@ -477,7 +418,7 @@ app.use((err, req, res, next) => {
 // 🚀 Export untuk Vercel Serverless
 module.exports = app;
 
-// 🖥️ Fallback untuk running lokal (jika tidak di Vercel)
+// 🖥️ Fallback untuk running lokal
 if (require.main === module) {
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
